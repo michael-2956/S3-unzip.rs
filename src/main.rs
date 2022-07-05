@@ -1,155 +1,115 @@
-use std::env;
+mod s3_helpers;
+mod s3_object_reader;
 
-use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::prelude::IntoRawFd;
-use std::process::{Command, Stdio};
+use s3_object_reader::S3ObjectReader;
+use s3_helpers::{get_client, check_bucket_in_list, check_object_exists, upload_object};
 
-use nix::unistd::pipe;
-use std::os::unix::io::FromRawFd;
+use std::io::Read;
 
-fn get_unzip_process(s3_zip_url: String, unzip_opt: &str) -> std::process::Child {
-    let unzip_l_fd = pipe().expect("failed to create pipe in get_unzip_process");
+use log::trace;
+use aws_sdk_s3::Client;
+use structopt::StructOpt;
 
-    let (unzip_l_pipe_out, unzip_l_pipe_in) = unsafe {
-        (
-            Stdio::from_raw_fd(unzip_l_fd.0),
-            Stdio::from_raw_fd(unzip_l_fd.1),
-        )
-    };
+#[derive(StructOpt, Debug)]
+#[structopt(name = "basic")]
+struct ProgramArgs {
+    /// Activate verbose mode
+    #[structopt(short, long)]
+    verbose: bool,
 
-    // aws s3 cp s3://sagemaker-studio-qt0kal0xm2/vox1_test_wav.zip -
-    Command::new("aws")
-        .args(["s3", "cp", &*s3_zip_url.clone(), "-"])
-        .stdout(unzip_l_pipe_in)
-        .spawn()
-        .expect(&*format!("Failed to execute: aws s3 cp {s3_zip_url} -"));
+    /// Specify region name
+    #[structopt(short, long, default_value="us-east-1")]
+    region_name: String,
 
-    // busybox unzip -l -
-    Command::new("busybox")
-        .args(["unzip", unzip_opt, "-"])
-        .stdin(unzip_l_pipe_out)
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect(&*format!("Failed to execute: unzip {unzip_opt} -"))
+    /// Specify unpacked objects' key prefix (folder)
+    #[structopt(short, long, default_value="/")]
+    prefix_name: String,
+
+    /// Bucket name
+    #[structopt()]
+    bucket_name: String,
+
+    /// archive key name
+    #[structopt()]
+    zip_name: String,
 }
 
-#[allow(dead_code)]
-fn get_unzip_process_dummy(zip_name: String, unzip_opt: &str) -> std::process::Child {
-    Command::new("unzip")
-        .args([unzip_opt, &*zip_name])
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect(&*format!("Failed to execute: unzip {unzip_opt} zip.zip"))
-}
+async fn unzip_and_upload(client: &Client, program_args: &ProgramArgs) -> std::io::Result<()> {
+    let ProgramArgs {
+        bucket_name, zip_name,
+        verbose, region_name: _, prefix_name
+    } = program_args;
+    let mut object_reader = S3ObjectReader::new(client, bucket_name, zip_name);
 
-fn get_aws_create_object_process(s3_object_url: String) -> std::process::Child {
-    Command::new("aws")
-        .args(["s3", "cp", "-", &*s3_object_url.clone()])
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect(&*format!("Failed to execute: aws s3 cp - {s3_object_url}"))
-}
+    let mut buf: Box<[u8]>;
 
-#[allow(dead_code)]
-fn get_aws_create_object_process_dummy(filename: String) -> std::process::Child {
-    let fd = File::create(&*filename)
-        .expect("failed to create file in get_aws_create_object_process_dummy")
-        .into_raw_fd();
-    let file_out = unsafe { Stdio::from_raw_fd(fd) };
-    Command::new("cat")
-        .stdin(Stdio::piped())
-        .stdout(file_out)
-        .spawn()
-        .expect(&*format!("Failed to execute: cat"))
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() <= 2 {
-        let err_text = match args.len() {
-            0 => format!("Usage: program_name [bucket_name] [zip_name]"),
-            1 | 2 => format!("Usage: {} [bucket_name] [zip_name]", args[0]),
-            _ => "Error: wrong number of args".to_string(),
-        };
-        return Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            err_text,
-        )));
-    }
-    let s3_bucket_name = args[1].clone();
-    let s3_zip_name = args[2].clone();
-    let s3_zip_url = format!("s3://{s3_bucket_name}/{s3_zip_name}");
-    println!("Url: {s3_zip_url}");
-
-    let mut unzip_l_process = get_unzip_process(s3_zip_url.clone(), "-l");
-    let mut unzip_p_process = get_unzip_process(s3_zip_url.clone(), "-p");
-
-    {
-        let unzip_l_stdout = BufReader::new(
-            unzip_l_process
-                .stdout
-                .take()
-                .expect("Failed to get unzip -l stdout"),
-        );
-        let mut unzip_p_process_bytes = unzip_p_process
-            .stdout
-            .take()
-            .expect("Failed to get unzip -p stdout")
-            .bytes();
-
-        for line in unzip_l_stdout
-            .lines()
-            .map(|line_res| match line_res {
-                Ok(line) => line,
-                Err(_) => panic!(),
-            })
-            .skip(3)
-            .take_while(|line| !line.contains("--------                     -------"))
-        {
-            let (filename, size) = (
-                format!(
-                    "wav/{}",
-                    line.split("   wav/")
-                        .skip(1)
-                        .next()
-                        .expect("failed to split by wav/")
-                        .trim()
-                ),
-                line.split("  05-29")
-                    .next()
-                    .expect("failed to split by 05-29")
-                    .trim()
-                    .parse::<usize>()
-                    .expect("failed to parse usize"),
-            );
-            println!("File: {filename} {size}       \r");
-            if !filename.ends_with('/') && size != 0 {
-                let mut create_object_process =
-                    get_aws_create_object_process(format!("s3://{s3_bucket_name}/{filename}"));
-                {
-                    let mut create_object_process_stdin = create_object_process
-                        .stdin
-                        .take()
-                        .expect("Failed to get stdin of object");
-                    let buf: Vec<u8> = unzip_p_process_bytes
-                        .by_ref()
-                        .take(size)
-                        .map(|b_res| b_res.expect("Failed to unpack u8"))
-                        .collect();
-                    if let Err(err) = create_object_process_stdin.write(&buf) {
-                        panic!("Error writing to create_object_process_stdin: {}", err);
-                    }
+    loop {
+        match zip::read::read_zipfile_from_stream(&mut object_reader) {
+            Ok(Some(mut file)) => {
+                if *verbose {
+                    println!(
+                        "{}: {} bytes ({} bytes packed)",
+                        file.name(),
+                        file.size(),
+                        file.compressed_size()
+                    );
                 }
-                create_object_process
-                    .wait()
-                    .expect("failed to wait for create_object_process");
+                
+                buf = (vec![0u8; file.size() as usize]).into_boxed_slice();
+                let mut offset = 0;
+
+                while offset != file.size() as usize {
+                    match file.read(&mut buf[offset..]) {
+                        Ok(n) => {
+                            if n == 0 {
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    format!("error: unzip: the uncompressed file size was not met: file.size(): {}", file.size()),
+                                ))
+                            }
+                            offset += n;
+                            trace!("unzip: read {} / {}", offset, file.size());
+                        },
+                        Err(e) => return Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("error: unzip: could not read the file: {:?}", e),
+                        ))
+                    };
+                }
+
+                let object_name = &*format!(
+                    "{}{}", prefix_name, file.enclosed_name()
+                    .expect(&*format!("error: unzip: path is {}", file.name()))
+                    .to_str()
+                    .expect(&*format!("error: unzip: couldn't convert path to string: {}", file.name()))
+                );
+
+                upload_object(client, bucket_name, object_name, buf).await?;
+            }
+            Ok(None) => break,
+            Err(e) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("error: unzip: {:?}", e),
+                ))
             }
         }
     }
 
-    unzip_l_process.wait().expect("failed to wait for unzip -l");
-    unzip_p_process.wait().expect("failed to wait for unzip -p");
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), std::io::Error> {
+    let program_args = ProgramArgs::from_args();
+
+    let client = get_client(program_args.region_name.clone()).await;
+
+    check_bucket_in_list(&client, program_args.bucket_name.clone()).await?;
+
+    check_object_exists(&client, program_args.bucket_name.clone(), program_args.zip_name.clone()).await?;
+
+    unzip_and_upload(&client, &program_args).await?;
 
     Ok(())
 }
