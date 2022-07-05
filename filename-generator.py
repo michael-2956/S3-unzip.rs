@@ -1,7 +1,7 @@
 from subprocess import Popen, PIPE
 
-# process = Popen(['aws', 's3', 'cp', 's3://sagemaker-studio-qt0kal0xm2/vox1_test_wav.zip', '-'], stdout=PIPE, stderr=PIPE)
-process = Popen(['cat', 'filelist.txt'], stdout=PIPE, stderr=PIPE)
+process = Popen(['aws', 's3', 'cp', 's3://sagemaker-studio-qt0kal0xm2/vox1_test_wav.zip', '-'], stdout=PIPE, stderr=PIPE)
+# process = Popen(['cat', 'filelist.txt'], stdout=PIPE, stderr=PIPE)
 stdout, stderr = process.communicate()
 stdout, stderr = stdout.decode('utf-8'), stderr.decode('utf-8')
 
