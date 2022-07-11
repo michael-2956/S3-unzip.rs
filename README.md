@@ -1,6 +1,6 @@
 # S3-unzip
 
-A simple *blazingly fast* Rust library to unzip an S3 archive into S3's root directory.
+A simple Rust library to unzip an S3 archive into S3's root directory.
 Works without downloading the archive or putting it into RAM, so will unzip a huge dataset
 archive even if run on `t2.micro`(restrictions apply).
 
