@@ -63,31 +63,3 @@ pub async fn check_bucket_in_list(
 
     Ok(())
 }
-
-pub async fn check_object_exists(
-    client: &Client,
-    s3_bucket_name: String,
-    s3_object_name: String,
-) -> Result<(), std::io::Error> {
-    let resp = match client.list_objects_v2().bucket(s3_bucket_name).send().await {
-        Ok(objects) => objects,
-        Err(err) => {
-            return Err(new_invalid_input_error(format!(
-                "Could not list_objects_v2 on client: {}",
-                err
-            )))
-        }
-    };
-
-    let objects = resp.contents().unwrap_or_default();
-    if objects
-        .iter()
-        .all(|object| object.key().unwrap_or_default() != s3_object_name)
-    {
-        return Err(new_invalid_input_error(format!(
-            "Object {s3_object_name} is not available!"
-        )));
-    }
-
-    Ok(())
-}

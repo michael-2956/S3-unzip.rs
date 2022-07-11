@@ -2,7 +2,7 @@ mod s3_helpers;
 mod s3_object_reader;
 
 use s3_object_reader::S3ObjectReader;
-use s3_helpers::{get_client, check_bucket_in_list, check_object_exists, upload_object};
+use s3_helpers::{get_client, check_bucket_in_list, upload_object};
 
 use std::io::Read;
 
@@ -106,8 +106,6 @@ async fn main() -> Result<(), std::io::Error> {
     let client = get_client(program_args.region_name.clone()).await;
 
     check_bucket_in_list(&client, program_args.bucket_name.clone()).await?;
-
-    check_object_exists(&client, program_args.bucket_name.clone(), program_args.zip_name.clone()).await?;
 
     unzip_and_upload(&client, &program_args).await?;
 
