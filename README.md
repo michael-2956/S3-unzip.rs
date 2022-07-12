@@ -2,7 +2,8 @@
 
 A simple Rust binary to unzip an S3 archive into S3's root directory.
 Works without downloading the archive or putting it into RAM, so will unzip a huge dataset
-archive even if run on `t2.micro`(restrictions apply).
+archive even if run on `t2.micro`(restrictions apply).\
+[Download x86_64 Linux Binary](https://github.com/michael-2956/S3-unzip.rs/raw/main/s3-unzip-x86_64-linux-gnu)
 
 ### Capabilities
 - Works without downloading the archive or putting it into RAM, so will unzip a huge dataset
