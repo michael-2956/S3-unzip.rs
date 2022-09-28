@@ -5,6 +5,7 @@ use s3_object_reader::S3ObjectReader;
 use s3_helpers::{get_client, check_bucket_in_list, upload_object};
 
 use std::io::Read;
+use std::io;
 
 use log::trace;
 use aws_sdk_s3::Client;
@@ -29,7 +30,7 @@ struct ProgramArgs {
     #[structopt()]
     bucket_name: String,
 
-    /// archive key name
+    /// archive key name; Parse zip file from stdin if equal to '-'
     #[structopt()]
     zip_name: String,
 }
@@ -39,7 +40,11 @@ async fn unzip_and_upload(client: &Client, program_args: &ProgramArgs) -> std::i
         bucket_name, zip_name,
         verbose, region_name: _, prefix_name
     } = program_args;
-    let mut object_reader = S3ObjectReader::new(client, bucket_name, zip_name);
+    let mut object_reader: Box::<dyn io::Read> = if zip_name == "-" {
+        Box::new(std::io::stdin())
+    } else {
+        Box::new(S3ObjectReader::new(client, bucket_name, zip_name))
+    };
 
     let mut buf: Box<[u8]>;
 
